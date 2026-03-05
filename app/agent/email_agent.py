@@ -83,8 +83,8 @@ class EmailAgent:
         if not intro:
             return None
 
-        today = datetime.now(timezone.utc).strftime("%B %d, %Y")
-        subject = f"Your AI News Digest — {today}"
+        today = datetime.now().strftime("%B %d, %Y")
+        subject = f"Your AI News Digest \u2014 {today}"
 
         return EmailContent(
             subject=subject,
@@ -96,7 +96,7 @@ class EmailAgent:
 
     def _generate_intro(self, items: list[dict]) -> EmailIntro | None:
         """Generate the personalized intro paragraph."""
-        today = datetime.now(timezone.utc).strftime("%A, %B %d, %Y")
+        today = datetime.now().strftime("%A, %B %d, %Y")
 
         # Build the article list for context
         article_list = "\n".join(

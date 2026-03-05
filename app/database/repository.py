@@ -10,12 +10,9 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.orm import Session
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.database.models import Article, SourceType
-from app.scrapers.youtube import VideoInfo
-from app.scrapers.openai_blog import ArticleInfo
-from app.scrapers.anthropic_blog import AnthropicArticle
 
 logger = logging.getLogger(__name__)
 
@@ -34,80 +31,93 @@ class ArticleRepository:
     def __init__(self, session: Session):
         self.session = session
 
-    # ── Insert Methods ───────────────────────────────────────────────────
+    # ── Generic Save ─────────────────────────────────────────────────────
 
-    def save_youtube_videos(self, videos: list[VideoInfo]) -> int:
+    def _save_items(
+        self,
+        items: list,
+        source_type: SourceType,
+        field_mapper: callable,
+        label: str,
+    ) -> int:
+        """
+        Generic insert method for any source type.
+
+        Args:
+            items:        List of Pydantic models (VideoInfo, ArticleInfo, etc.)
+            source_type:  SourceType enum value
+            field_mapper: Callable that takes an item and returns a dict of
+                          Article column values (excluding source_type)
+            label:        Human-readable label for logging
+
+        Returns:
+            Count of newly inserted rows.
+        """
+        count = 0
+        for item in items:
+            if self._url_exists(item.url):
+                logger.debug("Skipping duplicate: %s", item.url)
+                continue
+
+            fields = field_mapper(item)
+            article = Article(source_type=source_type, **fields)
+            self.session.add(article)
+            count += 1
+
+        self.session.commit()
+        logger.info("Inserted %d new %s (of %d)", count, label, len(items))
+        return count
+
+    # ── Source-Specific Wrappers ─────────────────────────────────────────
+
+    def save_youtube_videos(self, videos: list) -> int:
         """Insert YouTube videos. Returns count of newly inserted rows."""
-        count = 0
-        for video in videos:
-            if self._url_exists(video.url):
-                logger.debug("Skipping duplicate: %s", video.url)
-                continue
+        return self._save_items(
+            items=videos,
+            source_type=SourceType.YOUTUBE,
+            label="YouTube videos",
+            field_mapper=lambda v: {
+                "title": v.title,
+                "url": v.url,
+                "content": v.transcript.text if v.transcript else None,
+                "channel_name": v.channel_name,
+                "channel_id": v.channel_id,
+                "published_at": v.published_at,
+            },
+        )
 
-            article = Article(
-                source_type=SourceType.YOUTUBE,
-                title=video.title,
-                url=video.url,
-                content=video.transcript.text if video.transcript else None,
-                channel_name=video.channel_name,
-                channel_id=video.channel_id,
-                published_at=video.published_at,
-            )
-            self.session.add(article)
-            count += 1
-
-        self.session.commit()
-        logger.info("Inserted %d new YouTube videos (of %d)", count, len(videos))
-        return count
-
-    def save_openai_articles(self, articles: list[ArticleInfo]) -> int:
+    def save_openai_articles(self, articles: list) -> int:
         """Insert OpenAI articles. Returns count of newly inserted rows."""
-        count = 0
-        for art in articles:
-            if self._url_exists(art.url):
-                logger.debug("Skipping duplicate: %s", art.url)
-                continue
+        return self._save_items(
+            items=articles,
+            source_type=SourceType.OPENAI,
+            label="OpenAI articles",
+            field_mapper=lambda a: {
+                "title": a.title,
+                "url": a.url,
+                "content": a.content,
+                "description": a.description,
+                "category": getattr(a, "category", None),
+                "published_at": a.published_at,
+            },
+        )
 
-            article = Article(
-                source_type=SourceType.OPENAI,
-                title=art.title,
-                url=art.url,
-                content=art.content,
-                description=art.description,
-                category=art.category,
-                published_at=art.published_at,
-            )
-            self.session.add(article)
-            count += 1
-
-        self.session.commit()
-        logger.info("Inserted %d new OpenAI articles (of %d)", count, len(articles))
-        return count
-
-    def save_anthropic_articles(self, articles: list[AnthropicArticle]) -> int:
+    def save_anthropic_articles(self, articles: list) -> int:
         """Insert Anthropic articles. Returns count of newly inserted rows."""
-        count = 0
-        for art in articles:
-            if self._url_exists(art.url):
-                logger.debug("Skipping duplicate: %s", art.url)
-                continue
-
-            article = Article(
-                source_type=SourceType.ANTHROPIC,
-                title=art.title,
-                url=art.url,
-                content=art.content,
-                description=art.description,
-                category=art.category,
-                feed_source=art.feed_source,
-                published_at=art.published_at,
-            )
-            self.session.add(article)
-            count += 1
-
-        self.session.commit()
-        logger.info("Inserted %d new Anthropic articles (of %d)", count, len(articles))
-        return count
+        return self._save_items(
+            items=articles,
+            source_type=SourceType.ANTHROPIC,
+            label="Anthropic articles",
+            field_mapper=lambda a: {
+                "title": a.title,
+                "url": a.url,
+                "content": a.content,
+                "description": a.description,
+                "category": getattr(a, "category", None),
+                "feed_source": a.feed_source,
+                "published_at": a.published_at,
+            },
+        )
 
     # ── Query Methods ────────────────────────────────────────────────────
 
@@ -137,7 +147,6 @@ class ArticleRepository:
 
     def count_articles(self) -> int:
         """Return total number of articles in the database."""
-        from sqlalchemy import func
         stmt = select(func.count()).select_from(Article)
         return self.session.execute(stmt).scalar() or 0
 

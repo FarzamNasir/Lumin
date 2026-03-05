@@ -1,11 +1,14 @@
 """
 User Profile
 
-Defines the user's name, background, interests, and preferences
-so agents can personalize content and rank by relevance.
+Personalize this file to match YOUR background and interests.
+The Curator agent uses this to score and rank articles by relevance,
+and the Email agent uses your name for personalized greetings.
+
+To customize: edit USER_NAME and the USER_PROFILE text below.
 """
 
-USER_NAME = "Dave"
+USER_NAME = "Farzam"
 
 USER_PROFILE = """\
 I am a software engineer and AI enthusiast with a deep interest in:
