@@ -22,6 +22,7 @@ from app.database.repository import ArticleRepository
 from app.agent.digest_service import process_digests
 from app.agent.curation_service import curate_digests
 from app.agent.email_agent import EmailAgent
+from app.agent.email_sender import send_email
 
 logger = logging.getLogger(__name__)
 
@@ -192,3 +193,10 @@ if __name__ == "__main__":
                 print(f"     {item['summary']}")
                 print(f"     {item['url']}")
             print("\n" + "=" * 60)
+
+            # ── Send email ──────────────────────────────────────────────
+            sent = send_email(email)
+            if sent:
+                print("\n  \u2705 Email sent successfully!")
+            else:
+                print("\n  \u274c Email sending failed. Check SMTP config in .env")
