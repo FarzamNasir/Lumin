@@ -17,12 +17,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 import logging
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(name)s | %(message)s")
 
-from app.scrapers.youtube import (
-    fetch_channel_feed,
-    filter_videos_by_date,
-    fetch_transcript,
-    get_latest_videos,
-)
+from app.scrapers.youtube import YouTubeScraper
 
 
 # ── Test channels ────────────────────────────────────────────────────────────
@@ -35,9 +30,11 @@ def main():
     print("  YouTube Scraper -- Integration Test")
     print("=" * 60)
 
+    scraper = YouTubeScraper(channel_ids=[TEST_CHANNEL_ID])
+
     # 1) Fetch feed
     print("\n>> Fetching RSS feed...")
-    result = fetch_channel_feed(TEST_CHANNEL_ID)
+    result = scraper.fetch_channel_feed(TEST_CHANNEL_ID)
 
     if result.error:
         print(f"  [FAIL] Error: {result.error}")
@@ -54,7 +51,7 @@ def main():
 
     # 3) Filter by last 30 days (to ensure we get some results for the test)
     since = datetime.now(timezone.utc) - timedelta(days=30)
-    recent = filter_videos_by_date(result.videos, since)
+    recent = scraper._filter_by_date(result.videos, since)
     print(f"\n>> Videos from last 30 days: {len(recent)}")
     for v in recent:
         print(f"    - [{v.published_at.strftime('%Y-%m-%d')}] {v.title}")
@@ -63,7 +60,7 @@ def main():
     if recent:
         test_video = recent[0]
         print(f"\n>> Fetching transcript for: {test_video.title} ({test_video.video_id})")
-        transcript = fetch_transcript(test_video.video_id)
+        transcript = scraper.fetch_transcript(test_video.video_id)
         if transcript:
             preview = transcript[:300] + "..." if len(transcript) > 300 else transcript
             print(f"  [OK] Transcript length: {len(transcript)} chars")
@@ -74,8 +71,7 @@ def main():
     # 5) Test the full orchestrator
     print(f"\n>> Testing get_latest_videos() orchestrator (last 7 days, no transcripts)...")
     since_7d = datetime.now(timezone.utc) - timedelta(days=7)
-    videos = get_latest_videos(
-        channel_ids=[TEST_CHANNEL_ID],
+    videos = scraper.get_latest_videos(
         since=since_7d,
         fetch_transcripts=False,  # skip transcripts for speed
     )

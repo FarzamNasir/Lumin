@@ -6,9 +6,11 @@ services:
   - type: cron
     name: ai-news-digest
     runtime: docker
+    dockerfilePath: ./Dockerfile
     schedule: "0 8 * * *" # Every day at 8:00 AM UTC
     region: frankfurt
     plan: starter
+    branch: main
     envVars:
       - key: ENVIRONMENT
         value: production

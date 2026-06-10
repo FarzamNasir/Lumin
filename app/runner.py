@@ -18,7 +18,7 @@ from app.scrapers.youtube import YouTubeScraper, VideoInfo
 from app.scrapers.openai_blog import OpenAIScraper, ArticleInfo
 from app.scrapers.anthropic_blog import AnthropicScraper, AnthropicArticle
 from app.database.connection import get_session, engine
-from app.database.models import Base
+from app.database.models import Base, Digest
 from app.database.repository import ArticleRepository
 from app.agent.digest_service import process_digests
 from app.agent.curation_service import curate_digests
@@ -99,6 +99,10 @@ def run_scrapers(
         logger.info("Scraping OpenAI blog...")
         openai = OpenAIScraper()
         result.openai_articles = openai.get_latest_articles(since=since)
+
+        # Fetch full article content for better summaries
+        for article in result.openai_articles:
+            article.content = openai.fetch_article_content(article.url)
     except Exception as exc:
         logger.error("OpenAI scraper failed: %s", exc)
 
@@ -116,6 +120,7 @@ def run_scrapers(
 
     # ── Persist to database ──────────────────────────────────────────────
     if save_to_db and result.total_items > 0:
+        session = None
         try:
             logger.info("Saving %d items to database...", result.total_items)
             session = get_session()
@@ -124,19 +129,23 @@ def run_scrapers(
             result.youtube_inserted = repo.save_youtube_videos(result.youtube_videos)
             result.openai_inserted = repo.save_openai_articles(result.openai_articles)
             result.anthropic_inserted = repo.save_anthropic_articles(result.anthropic_articles)
-
-            session.close()
         except Exception as exc:
             logger.error("Database save failed: %s", exc)
+        finally:
+            if session:
+                session.close()
 
     # ── Generate digests ─────────────────────────────────────────────────
     if save_to_db:
+        session = None
         try:
             session = get_session()
             result.digests_created = process_digests(session)
-            session.close()
         except Exception as exc:
             logger.error("Digest processing failed: %s", exc)
+        finally:
+            if session:
+                session.close()
 
     logger.info(result.summary())
     return result
@@ -176,50 +185,51 @@ def run_full_pipeline(lookback_hours: int = LOOKBACK_HOURS):
     # Step 2: Curate and rank
     print("\n-- Curated Digest (ranked by relevance) --")
     session = get_session()
-    ranked = curate_digests(session, lookback_hours=lookback_hours)
+    try:
+        ranked = curate_digests(session, lookback_hours=lookback_hours)
 
-    for i, item in enumerate(ranked, 1):
-        print(f"\n  {i}. [{item['score']}/10] {item['title']}")
-        print(f"     {item['summary']}")
-        print(f"     Reason: {item['reason']}")
-        print(f"     {item['url']}")
+        for i, item in enumerate(ranked, 1):
+            print(f"\n  {i}. [{item['score']}/10] {item['title']}")
+            print(f"     {item['summary']}")
+            print(f"     Reason: {item['reason']}")
+            print(f"     {item['url']}")
 
-    # Step 3: Compose and send email
-    if ranked:
-        email_agent = EmailAgent()
-        email = email_agent.compose(ranked)
+        # Step 3: Compose and send email
+        if ranked:
+            email_agent = EmailAgent()
+            email = email_agent.compose(ranked)
 
-        if email:
-            print("\n" + "=" * 60)
-            print(f"  SUBJECT: {email.subject}")
-            print("=" * 60)
-            print(f"\n  {email.greeting}")
-            print(f"  {email.intro}")
-            print(f"\n  {'_' * 56}")
-            for i, item in enumerate(email.items, 1):
-                print(f"\n  {i}. {item['title']}")
-                print(f"     {item['summary']}")
-                print(f"     {item['url']}")
-            print("\n" + "=" * 60)
+            if email:
+                print("\n" + "=" * 60)
+                print(f"  SUBJECT: {email.subject}")
+                print("=" * 60)
+                print(f"\n  {email.greeting}")
+                print(f"  {email.intro}")
+                print(f"\n  {'_' * 56}")
+                for i, item in enumerate(email.items, 1):
+                    print(f"\n  {i}. {item['title']}")
+                    print(f"     {item['summary']}")
+                    print(f"     {item['url']}")
+                print("\n" + "=" * 60)
 
-            sent = send_email(email)
-            if sent:
-                print("\n  \u2705 Email sent successfully!")
+                sent = send_email(email)
+                if sent:
+                    print("\n  \u2705 Email sent successfully!")
 
-                # Step 4: Mark sent digests so they aren't re-sent
-                sent_ids = [item["digest_id"] for item in email.items if "digest_id" in item]
-                if sent_ids:
-                    from app.database.models import Digest
-                    now = datetime.now(timezone.utc)
-                    session.query(Digest).filter(
-                        Digest.id.in_(sent_ids)
-                    ).update({"sent_at": now}, synchronize_session="fetch")
-                    session.commit()
-                    logger.info("Marked %d digests as sent.", len(sent_ids))
-            else:
-                print("\n  \u274c Email sending failed. Check SMTP config in .env")
+                    # Step 4: Mark sent digests so they aren't re-sent
+                    sent_ids = [item["digest_id"] for item in email.items if "digest_id" in item]
+                    if sent_ids:
+                        now = datetime.now(timezone.utc)
+                        session.query(Digest).filter(
+                            Digest.id.in_(sent_ids)
+                        ).update({"sent_at": now}, synchronize_session="fetch")
+                        session.commit()
+                        logger.info("Marked %d digests as sent.", len(sent_ids))
+                else:
+                    print("\n  \u274c Email sending failed. Check SMTP config in .env")
+    finally:
+        session.close()
 
-    session.close()
     print(f"\n  Pipeline finished at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
