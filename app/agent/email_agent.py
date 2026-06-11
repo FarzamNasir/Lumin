@@ -9,12 +9,28 @@ Uses the OpenAI Responses API for the intro text.
 import logging
 from datetime import datetime, timezone
 
-from openai import OpenAI
+from openai import OpenAI, APIError
 from pydantic import BaseModel
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 
 from app.user_profile import USER_NAME
 
 logger = logging.getLogger(__name__)
+
+# Retry OpenAI API errors: up to 4 attempts, 2s → 4s → 8s → 16s backoff
+_openai_retry = retry(
+    retry=retry_if_exception_type(APIError),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 INTRO_PROMPT = """\
 You are writing the opening paragraph of a personalized daily AI news digest email.
@@ -95,7 +111,7 @@ class EmailAgent:
         )
 
     def _generate_intro(self, items: list[dict]) -> EmailIntro | None:
-        """Generate the personalized intro paragraph."""
+        """Generate the personalized intro paragraph (with retry)."""
         today = datetime.now().strftime("%A, %B %d, %Y")
 
         # Build the article list for context
@@ -112,17 +128,20 @@ class EmailAgent:
         )
 
         try:
-            response = self._client.responses.parse(
-                model=self.model,
-                instructions=INTRO_PROMPT,
-                input=[{"role": "user", "content": user_input}],
-                text_format=EmailIntro,
-            )
-
-            result = response.output_parsed
+            result = self._call_api(user_input)
             logger.info("Generated email intro for %s", USER_NAME)
             return result
-
         except Exception as exc:
-            logger.error("Email intro generation failed: %s", exc)
+            logger.error("Email intro generation failed after retries: %s", exc)
             return None
+
+    @_openai_retry
+    def _call_api(self, user_input: str) -> EmailIntro:
+        """Internal: call OpenAI API with automatic retry."""
+        response = self._client.responses.parse(
+            model=self.model,
+            instructions=INTRO_PROMPT,
+            input=[{"role": "user", "content": user_input}],
+            text_format=EmailIntro,
+        )
+        return response.output_parsed

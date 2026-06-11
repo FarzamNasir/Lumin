@@ -9,12 +9,28 @@ Named after a news editor/curator who decides which stories matter most.
 
 import logging
 
-from openai import OpenAI
+from openai import OpenAI, APIError
 from pydantic import BaseModel
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 
 from app.user_profile import USER_PROFILE
 
 logger = logging.getLogger(__name__)
+
+# Retry OpenAI API errors: up to 4 attempts, 2s → 4s → 8s → 16s backoff
+_openai_retry = retry(
+    retry=retry_if_exception_type(APIError),
+    stop=stop_after_attempt(4),
+    wait=wait_exponential(multiplier=2, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 SYSTEM_PROMPT = """\
 You are an AI news curator. Your job is to score a list of AI news digest items \
@@ -95,19 +111,21 @@ class Curator:
         )
 
         try:
-            response = self._client.responses.parse(
-                model=self.model,
-                instructions=SYSTEM_PROMPT,
-                input=[{"role": "user", "content": user_input}],
-                text_format=CuratorOutput,
-            )
-
-            result = response.output_parsed
-            # Sort by score descending
-            ranked = sorted(result.items, key=lambda x: x.score, reverse=True)
+            ranked = self._call_api(user_input)
             logger.info("Curator scored %d items", len(ranked))
             return ranked
-
         except Exception as exc:
-            logger.error("Curator failed: %s", exc)
+            logger.error("Curator failed after retries: %s", exc)
             return []
+
+    @_openai_retry
+    def _call_api(self, user_input: str) -> list[ScoredItem]:
+        """Internal: call OpenAI API with automatic retry."""
+        response = self._client.responses.parse(
+            model=self.model,
+            instructions=SYSTEM_PROMPT,
+            input=[{"role": "user", "content": user_input}],
+            text_format=CuratorOutput,
+        )
+        result = response.output_parsed
+        return sorted(result.items, key=lambda x: x.score, reverse=True)

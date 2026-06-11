@@ -15,8 +15,26 @@ import xml.etree.ElementTree as ET
 import httpx
 import html2text
 from pydantic import BaseModel
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 
 logger = logging.getLogger(__name__)
+
+# ── Retry decorators ─────────────────────────────────────────────────────────
+
+# Retry HTTP errors: up to 3 attempts, 1s → 2s → 4s backoff
+_http_retry = retry(
+    retry=retry_if_exception_type(httpx.HTTPError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -90,12 +108,11 @@ class RSSScraperBase(ABC):
         return all_articles
 
     def _fetch_feed(self, feed_url: str) -> list[BaseModel]:
-        """Fetch and parse a single RSS feed."""
+        """Fetch and parse a single RSS feed (with retry on transient HTTP errors)."""
         try:
-            resp = self._http_client.get(feed_url)
-            resp.raise_for_status()
+            resp = self._fetch_with_retry(feed_url)
         except httpx.HTTPError as exc:
-            logger.error("Error fetching %s: %s", feed_url, exc)
+            logger.error("Error fetching %s after retries: %s", feed_url, exc)
             return []
 
         root = ET.fromstring(resp.text)
@@ -108,9 +125,16 @@ class RSSScraperBase(ABC):
 
         return articles
 
+    @_http_retry
+    def _fetch_with_retry(self, url: str) -> httpx.Response:
+        """Internal: perform a GET request with automatic retry on HTTP errors."""
+        resp = self._http_client.get(url)
+        resp.raise_for_status()
+        return resp
+
     def fetch_article_content(self, url: str) -> str | None:
         """
-        Fetch an article's page and convert it to Markdown.
+        Fetch an article's page and convert it to Markdown (with retry).
 
         Args:
             url: The full URL of the article.
@@ -119,13 +143,12 @@ class RSSScraperBase(ABC):
             Markdown string of the article content, or None on failure.
         """
         try:
-            resp = self._http_client.get(url)
-            resp.raise_for_status()
+            resp = self._fetch_with_retry(url)
             markdown = self._html2text.handle(resp.text).strip()
             logger.info("Fetched content for %s (%d chars)", url, len(markdown))
             return markdown
         except Exception as exc:
-            logger.warning("Could not fetch content for %s: %s", url, exc)
+            logger.warning("Could not fetch content for %s after retries: %s", url, exc)
             return None
 
     @staticmethod

@@ -11,9 +11,36 @@ import xml.etree.ElementTree as ET
 
 import httpx
 from pydantic import BaseModel, Field
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+    before_sleep_log,
+)
 from youtube_transcript_api import YouTubeTranscriptApi
 
 logger = logging.getLogger(__name__)
+
+# ── Retry decorators ─────────────────────────────────────────────────────────
+
+# Retry HTTP feed fetches: up to 3 attempts, 1s → 2s → 4s backoff
+_http_retry = retry(
+    retry=retry_if_exception_type(httpx.HTTPError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
+
+# Retry transcript fetches: up to 3 attempts on any error
+_transcript_retry = retry(
+    retry=retry_if_exception_type(Exception),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
@@ -148,10 +175,9 @@ class YouTubeScraper:
         result = ChannelFetchResult(channel_id=channel_id)
 
         try:
-            resp = self._http_client.get(url)
-            resp.raise_for_status()
+            resp = self._get_with_retry(url)
         except httpx.HTTPError as exc:
-            result.error = f"HTTP error fetching feed: {exc}"
+            result.error = f"HTTP error fetching feed after retries: {exc}"
             logger.error(result.error)
             return result
 
@@ -180,9 +206,16 @@ class YouTubeScraper:
         )
         return result
 
+    @_http_retry
+    def _get_with_retry(self, url: str) -> httpx.Response:
+        """Internal: GET with automatic retry on HTTP errors."""
+        resp = self._http_client.get(url)
+        resp.raise_for_status()
+        return resp
+
     def fetch_transcript(self, video_id: str) -> str | None:
         """
-        Fetch the transcript for a YouTube video.
+        Fetch the transcript for a YouTube video (with retry).
 
         Args:
             video_id: The YouTube video ID.
@@ -191,19 +224,24 @@ class YouTubeScraper:
             The full transcript as a single string, or None if unavailable.
         """
         try:
-            fetched = self._transcript_api.fetch(
-                video_id, languages=self.transcript_languages
-            )
-            full_text = " ".join(snippet.text for snippet in fetched)
+            full_text = self._fetch_transcript_with_retry(video_id)
             logger.info(
                 "Fetched transcript for video %s (%d chars)", video_id, len(full_text)
             )
             return full_text
         except Exception as exc:
             logger.warning(
-                "Could not fetch transcript for video %s: %s", video_id, exc
+                "Could not fetch transcript for video %s after retries: %s", video_id, exc
             )
             return None
+
+    @_transcript_retry
+    def _fetch_transcript_with_retry(self, video_id: str) -> str:
+        """Internal: fetch transcript text with automatic retry."""
+        fetched = self._transcript_api.fetch(
+            video_id, languages=self.transcript_languages
+        )
+        return " ".join(snippet.text for snippet in fetched)
 
     # ── Private Helpers ──────────────────────────────────────────────────
 
