@@ -1,14 +1,15 @@
 """
 Email Sender
 
-Renders the EmailContent into a beautiful HTML email and
-sends it via Gmail SMTP with App Password authentication.
+Renders the EmailContent into a monochromatic, shadcn/ui-inspired HTML
+email and sends it via Gmail SMTP with App Password authentication.
 """
 
 import os
 import logging
 import smtplib
 import ssl
+from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -16,153 +17,260 @@ from app.agent.email_agent import EmailContent
 
 logger = logging.getLogger(__name__)
 
+# ── Design tokens (shadcn/ui zinc) ───────────────────────────────────────────
+# background:#f4f4f5  card:#ffffff  border:#e4e4e7
+# foreground:#18181b  muted-foreground:#71717a  muted:#fafafa
+# header/footer:#09090b  muted-header:#a1a1aa
+# score-high → green:  fg:#15803d  bg:#f0fdf4  border:#bbf7d0
+# score-low  → amber:  fg:#c2410c  bg:#fff7ed  border:#fed7aa
 
-def _build_article_row(index: int, item: dict) -> str:
-    """Build the HTML for a single article card."""
-    score = item.get("score", 0)
+FONT_STACK = (
+    "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, "
+    "Helvetica, Arial, sans-serif"
+)
+MONO_STACK = "'SF Mono', 'Roboto Mono', Consolas, monospace"
 
-    # Score badge color
-    if score >= 8:
-        badge_bg = "#10b981"
-        badge_text = "#ffffff"
-    elif score >= 5:
-        badge_bg = "#f59e0b"
-        badge_text = "#ffffff"
+
+def _score_badge(score: float) -> str:
+    """Return the score badge HTML with green (≥7) or amber (<7) styling."""
+    score_str = f"{score:.1f}" if isinstance(score, float) else str(score)
+
+    if float(score) >= 7:
+        bg, border, fg = "#f0fdf4", "#bbf7d0", "#15803d"
     else:
-        badge_bg = "#6b7280"
-        badge_text = "#ffffff"
+        bg, border, fg = "#fff7ed", "#fed7aa", "#c2410c"
+
+    return (
+        f'<td style="background-color:{bg}; border:1px solid {border}; '
+        f'border-radius:6px; padding:3px 9px;">'
+        f'<span style="font-family:{MONO_STACK}; font-size:12px; '
+        f'font-weight:600; color:{fg};">{score_str}</span></td>'
+    )
+
+
+def _build_story_card(index: int, item: dict) -> str:
+    """Build one story card matching the monochromatic design."""
+    rank = f"{index:02d}"
+    score = item.get("score", 0)
+    title = item.get("title", "")
+    summary = item.get("summary", "")
+    url = item.get("url", "#")
+
+    badge_html = _score_badge(score)
 
     return f"""
-    <tr>
-      <td style="padding: 0 0 16px 0;">
-        <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e5e7eb;">
           <tr>
-            <td style="padding: 20px 24px;">
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <td style="background-color:#fafafa; padding: 0 32px; border-left:1px solid #e4e4e7; border-right:1px solid #e4e4e7;" class="px-mobile">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#ffffff; border:1px solid #e4e4e7; border-radius:8px; margin-bottom:12px;">
                 <tr>
-                  <td style="vertical-align: top; width: 36px; padding-right: 14px;">
-                    <div style="background-color: {badge_bg}; color: {badge_text}; font-size: 13px; font-weight: 700; width: 36px; height: 36px; line-height: 36px; text-align: center; border-radius: 8px; font-family: 'Inter', Arial, sans-serif;">
-                      {score}
-                    </div>
-                  </td>
-                  <td style="vertical-align: top;">
-                    <p style="margin: 0 0 6px 0; font-size: 16px; font-weight: 700; color: #111827; font-family: 'Inter', Arial, sans-serif; line-height: 1.4;">
-                      {item['title']}
-                    </p>
-                    <p style="margin: 0 0 10px 0; font-size: 14px; color: #4b5563; font-family: 'Inter', Arial, sans-serif; line-height: 1.6;">
-                      {item['summary']}
-                    </p>
-                    <a href="{item['url']}" style="display: inline-block; font-size: 13px; font-weight: 600; color: #6366f1; text-decoration: none; font-family: 'Inter', Arial, sans-serif;">
-                      Read more &rarr;
-                    </a>
+                  <td style="padding: 20px 20px 16px 20px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td valign="top" style="font-family:{MONO_STACK}; font-size:12px; color:#a1a1aa; padding-right:12px; padding-top:2px; white-space:nowrap;">
+                          {rank}
+                        </td>
+                        <td valign="top">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                            <tr>
+                              <td style="font-family:{FONT_STACK}; font-size:15.5px; font-weight:600; line-height:21px; color:#18181b; padding-bottom:8px;">
+                                {title}
+                              </td>
+                            </tr>
+                            <tr>
+                              <td style="font-family:{FONT_STACK}; font-size:13.5px; line-height:20px; color:#71717a; padding-bottom:14px;">
+                                {summary}
+                              </td>
+                            </tr>
+                            <tr>
+                              <td>
+                                <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                                  <tr>
+                                    {badge_html}
+                                    <td style="padding-left:10px; font-family:{FONT_STACK}; font-size:13px; color:#a1a1aa;">&middot;</td>
+                                    <td style="padding-left:10px;">
+                                      <a href="{url}" style="font-family:{FONT_STACK}; font-size:13px; font-weight:600; color:#18181b; text-decoration:none; border-bottom:1px solid #18181b;">Read more &rarr;</a>
+                                    </td>
+                                  </tr>
+                                </table>
+                              </td>
+                            </tr>
+                          </table>
+                        </td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
             </td>
-          </tr>
-        </table>
-      </td>
-    </tr>"""
+          </tr>"""
 
 
 def build_html_email(email: EmailContent, manage_url: str = "") -> str:
-    """Render EmailContent into a complete HTML email string."""
+    """Render EmailContent into the monochromatic HTML email template."""
 
-    # Build article rows
-    article_rows = "\n".join(
-        _build_article_row(i, item)
+    num_stories = len(email.items)
+    today = datetime.now().strftime("%A, %B\u00a0%d")  # e.g. "Friday, June 19"
+    date_display = email.subject.replace("Your AI News Digest \u2014 ", "")
+
+    # Preheader text (hidden preview)
+    preheader = email.intro[:120] if email.intro else ""
+
+    # Build all story cards
+    story_cards = "\n".join(
+        _build_story_card(i, item)
         for i, item in enumerate(email.items, 1)
     )
 
+    # Footer manage/unsubscribe links
+    if manage_url:
+        footer_links = f"""
+                <tr>
+                  <td style="padding-top:10px; font-family:{FONT_STACK}; font-size:12px;">
+                    <a href="{manage_url}" style="color:#71717a; text-decoration:underline;">Manage preferences</a>
+                    <span style="color:#3f3f46;">&nbsp;&nbsp;&middot;&nbsp;&nbsp;</span>
+                    <a href="{manage_url}" style="color:#71717a; text-decoration:underline;">Unsubscribe</a>
+                  </td>
+                </tr>"""
+    else:
+        footer_links = ""
+
     html = f"""\
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns="http://www.w3.org/1999/xhtml" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{email.subject}</title>
-</head>
-<body style="margin: 0; padding: 0; background-color: #f3f4f6; font-family: 'Inter', Arial, Helvetica, sans-serif; -webkit-font-smoothing: antialiased;">
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta http-equiv="X-UA-Compatible" content="IE=edge" />
+<title>{email.subject}</title>
+<!--[if mso]>
+<noscript>
+<xml>
+<o:OfficeDocumentSettings>
+<o:PixelsPerInch>96</o:PixelsPerInch>
+</o:OfficeDocumentSettings>
+</xml>
+</noscript>
+<![endif]-->
+<style>
+  body, table, td, a {{ -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }}
+  table, td {{ mso-table-lspace: 0pt; mso-table-rspace: 0pt; }}
+  img {{ -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }}
+  body {{ margin: 0; padding: 0; width: 100% !important; height: 100% !important; }}
+  a {{ color: #18181b; }}
 
-  <!-- Wrapper -->
-  <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #f3f4f6;">
+  @media screen and (max-width: 600px) {{
+    .email-container {{ width: 100% !important; }}
+    .px-mobile {{ padding-left: 20px !important; padding-right: 20px !important; }}
+    .stack {{ display: block !important; width: 100% !important; }}
+    .h1-mobile {{ font-size: 22px !important; }}
+  }}
+</style>
+</head>
+<body style="margin:0; padding:0; background-color:#f4f4f5;">
+
+  <!-- Preheader (hidden) -->
+  <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#fafafa; opacity:0;">
+    {preheader}
+  </div>
+
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f4f4f5;">
     <tr>
       <td align="center" style="padding: 32px 16px;">
 
-        <!-- Main Container -->
-        <table width="600" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; width: 100%;">
+        <table role="presentation" class="email-container" width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px;">
 
           <!-- Header -->
           <tr>
-            <td style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 32px 32px 28px 32px; border-radius: 16px 16px 0 0;">
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <td style="background-color:#09090b; border-radius:12px 12px 0 0; padding: 28px 32px;" class="px-mobile">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
                 <tr>
-                  <td>
-                    <p style="margin: 0 0 4px 0; font-size: 13px; font-weight: 600; color: rgba(255,255,255,0.8); text-transform: uppercase; letter-spacing: 1.5px; font-family: 'Inter', Arial, sans-serif;">
-                      Daily AI Digest
-                    </p>
-                    <p style="margin: 0; font-size: 24px; font-weight: 800; color: #ffffff; font-family: 'Inter', Arial, sans-serif; line-height: 1.3;">
-                      {email.subject.replace('Your AI News Digest — ', '')}
-                    </p>
+                  <td valign="middle">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="font-family:{FONT_STACK}; font-size:11px; font-weight:600; letter-spacing:1.6px; color:#a1a1aa; text-transform:uppercase; padding-bottom:6px;">
+                          DAILY AI DIGEST
+                        </td>
+                      </tr>
+                      <tr>
+                        <td class="h1-mobile" style="font-family:{FONT_STACK}; font-size:24px; font-weight:600; color:#fafafa; letter-spacing:-0.3px;">
+                          {date_display}
+                        </td>
+                      </tr>
+                    </table>
                   </td>
-                  <td style="text-align: right; vertical-align: top;">
-                    <div style="background-color: rgba(255,255,255,0.15); border-radius: 10px; padding: 8px 14px; display: inline-block;">
-                      <span style="font-size: 20px; line-height: 1;">&#129302;</span>
-                    </div>
+                  <td valign="middle" align="right">
+                    <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                      <tr>
+                        <td style="width:8px; height:8px; border-radius:50%; background-color:#4ade80; font-size:0; line-height:0;">&nbsp;</td>
+                        <td style="font-family:{MONO_STACK}; font-size:11px; color:#a1a1aa; padding-left:6px;">{num_stories} stories</td>
+                      </tr>
+                    </table>
                   </td>
                 </tr>
               </table>
             </td>
           </tr>
 
-          <!-- Intro Section -->
+          <!-- Greeting / summary card -->
           <tr>
-            <td style="background-color: #ffffff; padding: 28px 32px; border-bottom: 1px solid #e5e7eb;">
-              <p style="margin: 0 0 8px 0; font-size: 18px; font-weight: 700; color: #111827; font-family: 'Inter', Arial, sans-serif;">
-                {email.greeting}
-              </p>
-              <p style="margin: 0; font-size: 15px; color: #4b5563; line-height: 1.7; font-family: 'Inter', Arial, sans-serif;">
-                {email.intro}
-              </p>
-            </td>
-          </tr>
-
-          <!-- Section Header -->
-          <tr>
-            <td style="background-color: #f9fafb; padding: 20px 32px 12px 32px;">
-              <p style="margin: 0; font-size: 12px; font-weight: 700; color: #6b7280; text-transform: uppercase; letter-spacing: 1.2px; font-family: 'Inter', Arial, sans-serif;">
-                Top {len(email.items)} stories ranked for you
-              </p>
-            </td>
-          </tr>
-
-          <!-- Articles -->
-          <tr>
-            <td style="background-color: #f9fafb; padding: 8px 32px 24px 32px;">
-              <table width="100%" cellpadding="0" cellspacing="0" border="0">
-                {article_rows}
+            <td style="background-color:#ffffff; padding: 28px 32px 24px 32px; border-left:1px solid #e4e4e7; border-right:1px solid #e4e4e7;" class="px-mobile">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="font-family:{FONT_STACK}; font-size:17px; font-weight:600; color:#18181b; padding-bottom:10px;">
+                    {email.greeting}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="font-family:{FONT_STACK}; font-size:14px; line-height:22px; color:#52525b;">
+                    {email.intro}
+                  </td>
+                </tr>
               </table>
+            </td>
+          </tr>
+
+          <!-- Section label -->
+          <tr>
+            <td style="background-color:#fafafa; padding: 18px 32px 14px 32px; border-left:1px solid #e4e4e7; border-right:1px solid #e4e4e7; border-top:1px solid #e4e4e7;" class="px-mobile">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td class="stack" style="font-family:{MONO_STACK}; font-size:11px; font-weight:600; letter-spacing:1.2px; color:#71717a; text-transform:uppercase;">
+                    Top {num_stories} stories, ranked for you
+                  </td>
+                  <td class="stack" align="right" style="font-family:{MONO_STACK}; font-size:11px; color:#a1a1aa; white-space:nowrap; padding-left:12px;">
+                    score&nbsp;/&nbsp;10
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Story cards -->
+{story_cards}
+
+          <!-- Spacer before footer -->
+          <tr>
+            <td style="background-color:#fafafa; padding: 4px 32px 24px 32px; border-left:1px solid #e4e4e7; border-right:1px solid #e4e4e7;" class="px-mobile">
+              &nbsp;
             </td>
           </tr>
 
           <!-- Footer -->
           <tr>
-            <td style="background-color: #1f2937; padding: 24px 32px; border-radius: 0 0 16px 16px; text-align: center;">
-              <p style="margin: 0 0 8px 0; font-size: 13px; color: rgba(255,255,255,0.6); font-family: 'Inter', Arial, sans-serif;">
-                Curated by Lumin &mdash; your AI news assistant
-              </p>
-              {f'''<p style="margin: 0 0 8px 0; font-size: 13px; font-family: 'Inter', Arial, sans-serif;">
-                <a href="{manage_url}" style="color: #818cf8; text-decoration: none;">Manage preferences</a>
-                &nbsp;&bull;&nbsp;
-                <a href="{manage_url}" style="color: rgba(255,255,255,0.4); text-decoration: none;">Unsubscribe</a>
-              </p>''' if manage_url else ''}
-              <p style="margin: 0; font-size: 12px; color: rgba(255,255,255,0.35); font-family: 'Inter', Arial, sans-serif;">
-                Scores reflect relevance to your profile
-              </p>
+            <td style="background-color:#09090b; border-radius:0 0 12px 12px; padding: 22px 32px;" class="px-mobile">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <td style="font-family:{FONT_STACK}; font-size:12px; color:#a1a1aa; line-height:18px;">
+                    Curated by Lumin &mdash; scores reflect relevance to your profile.
+                  </td>
+                </tr>
+{footer_links}
+              </table>
             </td>
           </tr>
 
         </table>
+
       </td>
     </tr>
   </table>
@@ -216,7 +324,11 @@ def send_email(
     # Plain text fallback
     plain_text = f"{email_content.greeting}\n\n{email_content.intro}\n\n"
     for i, item in enumerate(email_content.items, 1):
-        plain_text += f"{i}. {item['title']}\n   {item['summary']}\n   {item['url']}\n\n"
+        plain_text += (
+            f"{i:02d}. [{item.get('score', '?')}/10] {item['title']}\n"
+            f"    {item['summary']}\n"
+            f"    {item['url']}\n\n"
+        )
     if manage_url:
         plain_text += f"\n---\nManage preferences: {manage_url}\n"
 
